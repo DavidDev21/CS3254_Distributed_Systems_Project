@@ -13,7 +13,7 @@ import ("fmt"
 		// "os"
 		"github.com/kataras/iris"
 		"flag"
-		CO "CS_Project/custom_objects"
+		CO "CS3254_Project/custom_objects"
 		)
 
 
