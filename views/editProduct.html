@@ -1,0 +1,122 @@
+<!doctype html>
+<html>
+    <head>
+        <title>CS3254: MyBay</title>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+        <link rel = "stylesheet" href="styles/editProduct.css"/>
+
+        <script src="https://code.jquery.com/jquery-3.3.1.slim.min.js" integrity="sha384-q8i/X+965DzO0rT7abK41JStQIAqVgRVzpbzo5smXKp4YfRvH+8abtTE1Pi6jizo" crossorigin="anonymous"></script>
+        <script src="https://cdnjs.cloudflare.com/ajax/libs/popper.js/1.14.7/umd/popper.min.js" integrity="sha384-UO2eT0CpHqdSJQ6hJty5KVphtPhzWj9WO1clHTMGa3JDZwrnQq4sF86dIHNDz0W1" crossorigin="anonymous"></script>
+        <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.3.1/css/bootstrap.min.css" integrity="sha384-ggOyR0iXCbMQv3Xipma34MD+dH/1fQ784/j6cY/iJTQUOhcWr7x9JvoRxT2MZw1T" crossorigin="anonymous">
+        <script src="https://stackpath.bootstrapcdn.com/bootstrap/4.3.1/js/bootstrap.min.js" integrity="sha384-JjSmVgyd0p3pXB1rRibZUAYoIIy6OrQ6VrjIEaFf/nJGzIxFDsf4x0xIM+B07jRM" crossorigin="anonymous"></script>
+    </head>
+    <body class="bg-primary">
+        <div class="container p-3">
+            <div class="row justify-content-center text-center">
+                <div class="col">
+                    <h1>MyBay</h1>
+                    <h3>World's most legit ebay</h3>
+                </div>
+            </div>
+            <div class="row justify-content-center text-center">
+                <div class="col">
+                    <h2>Edit a product</h2>
+                </div>
+            </div>
+
+            <div class="row justify-content-center">
+                <div class="col-6 edit_form">
+                    <form class="m-3" action="/edit/{{.product.ID}}" method="POST">
+                        <div class="container px-5">
+                            <div class="row justify-content-center mb-3 form_title">
+                                <div class="col text-center">
+                                    <h4>Edit Product Form</h4>
+                                </div>
+                            </div>
+                            
+                            <div class="row justify-content-between">
+                                <div class="col-3">
+                                    <h4>ID: </h4>
+                                </div>
+                                <div class="col-7">
+                                    <input disabled type="number" name="product_id" value="{{.product.ID}}">
+                                </div>
+                            </div>
+
+                            <div class="row justify-content-between">
+                                <div class="col-3">
+                                    <h4>Name: </h4>
+                                </div>
+                                <div class="col-7">
+                                    <input type="text" name="name" value="{{.product.Name}}">
+                                </div>
+                            </div>
+                            <div class="row justify-content-between">
+                                <div class="col-3">
+                                    <h4>Seller: </h4>
+                                </div>
+                                <div class="col-7">
+                                    <input type="text" name="seller" value="{{.product.Seller}}">
+                                </div>
+                            </div>
+                            <div class="row justify-content-between">
+                                <div class="col-3">
+                                    <h4>Condition: </h4>
+                                </div>
+                                <div class="col-7">
+                                    <!-- .product.Condition == a pipeline. $ captures the result making it usable in the condition. $variable
+                                    In this case there is no name, $ is the name -->
+                                    <select name="condition">
+                                        {{if eq $.product.Condition "New"}}
+                                            <option value="New" selected>New</option>
+                                        {{else}}
+                                            <option value="New">New</option>
+                                        {{end}}
+                                        {{if eq $.product.Condition "Good"}}
+                                            <option value="Good" selected>Good</option>
+                                        {{else}}
+                                            <option value="Good">Good</option>  
+                                        {{end}}
+                                        {{if eq $.product.Condition "Used"}}
+                                            <option value="Used" selected>Used</option>
+                                        {{else}}
+                                            <option value="Used">Used</option>
+                                        {{end}}
+                                        {{if eq $.product.Condition "Bad"}}
+                                            <option value="Bad" selected>Bad</option>
+                                        {{else}}
+                                            <option value="Bad">Bad</option>
+                                        {{end}}
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="row justify-content-between">
+                                <div class="col-3">
+                                    <h4>Price: </h4>
+                                </div>
+                                <div class="col-7">
+                                    <input value="{{.product.Price}}" min="0" type="number" name="price">
+                                </div>
+                            </div>
+                            <div class="row justify-content-between">
+                                <div class="col-3">
+                                    <h4>Description: </h4>
+                                </div>
+                                <div class="col-7">
+                                    <textarea name="description" rows="4" cols="25" required>{{.product.Description}}</textarea>
+                                </div>
+                            </div>
+                            <div class="row justify-content-end mt-3">
+                                <div class="column">
+                                    <button class="btn btn-primary" type="submit">Submit</button>
+                                </div>
+                            </div>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </body>
+</html>
