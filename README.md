@@ -1,17 +1,11 @@
-# CS3254_Project
-Project for Parallel and Distributed Systems Course
+## CS3254 Project
 
-### Author: David Zheng (dz1063)
+# Phase 1
+'''
+Create a basic web app with golang IRIS
+'''
 
-### Status: Working
-
-## Setup and Run
-1. Put this folder into $GOPATH/src
-2. cd into $GOPATH/src and run "go get CS3254_Project"
-2. cd into the CS3254_Project directory
-3. run "go run main.go" to start the web app
-
-## Resources / Tools Used
-1. Golang Iris Framework
-2. Golang Version 1.13
-3. Bootstrap 4 for styling (imported via CDN)
+# Phase 2
+'''
+Separate original app into frontend and backend server
+'''
