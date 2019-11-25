@@ -14,6 +14,8 @@ import ("fmt"
 		"errors"
 		"sync"
 		"strings"
+		"time"
+		"math/rand"
 		CO "CS3254_Project/custom_objects")
 
 // Performs RPC Dial to address under the indicated network protocol
@@ -86,6 +88,10 @@ const FOLLOWER_STATE = "follower"
 const LEADER_STATE = "leader"
 const CANDIDATE_STATE = "candidate"
 
+var timeout int
+var startSignal chan bool
+var timer <-chan time.Time
+
 // We need the arguments that come with the commands
 // In order to replicate the state of the database
 type CommandArgs struct {
@@ -114,7 +120,7 @@ type Raft struct {
 	state string
 
 	quorumSize int // the minimum quorum we need given our initial configuration
-
+	leaderID string
 	replicas []string
 }
 
@@ -124,6 +130,20 @@ type AppendRequest struct {
 }
 type RaftResponse struct {
 
+}
+
+type AppendEntriesArgs struct {
+	term int
+	leaderID string
+	prevLogIndex int
+	prevLogTerm int
+	entries []LogEntry
+	leaderCommit int
+}
+
+type AppendEntriesResponse struct {
+	term int
+	success bool
 }
 
 func (self *Raft) AppendEntries() {
@@ -158,22 +178,29 @@ type RequestVoteResponse struct {
 
 // Work In Progress: current skelelton
 // self: here should be the receiver end meaning a follower
-func (self *Raft) RequestVote(term int, candidateID string, lastLogIndex int, lastLogTerm int) (int, bool) {
+// Args: term int, candidateID string, lastLogIndex int, lastLogTerm int
+func (self *Raft) RequestVote(req RequestVoteArgs, res *RequestVoteResponse) error {
 	// Case: we already voted for the candidate that is requesting (in the event of network failure)
-	if (self.votedFor == candidateID) {
-		return self.currentTerm, true
+	if (self.votedFor == req.candidateID) {
+		res.term = self.currentTerm
+		res.voteGranted = true
+		return nil
+		//return self.currentTerm, true
 	}
 
 	// Case: we already voted for someone else
-	if (self.votedFor != "") {
-		return self.currentTerm, false
+	if (self.votedFor != "" || req.term < self.currentTerm) {
+		res.term = self.currentTerm
+		res.voteGranted = false
+		return nil
+		//return self.currentTerm, false
 	}
 
 	// First Check if Caller's term is not behind ours
 	// If so, we don't give them our vote since they are not eligible for leadership
-	if (term < self.currentTerm) {
-		return self.currentTerm, false
-	}
+	// if (term < self.currentTerm) {
+	// 	return self.currentTerm, false
+	// }
 
 	// We grant the vote if we haven't voted for anyone, or if we already voted for candidateID.
 	// The candidate's log should be at least up to date in respects to our log
@@ -192,15 +219,24 @@ func (self *Raft) RequestVote(term int, candidateID string, lastLogIndex int, la
 
 	currentLastIndex := len(self.log)-1
 
-	if (lastLogTerm > self.log[currentLastIndex].termNumber) {
-		return self.currentTerm, true
+	if (req.lastLogTerm > self.log[currentLastIndex].termNumber) {
+		res.term = self.currentTerm
+		res.voteGranted = true
+		return nil
+		//return self.currentTerm, true
 	}
 
-	if (lastLogTerm == self.log[currentLastIndex].termNumber && lastLogIndex > currentLastIndex) {
-		return self.currentTerm, true
+	if (req.lastLogTerm == self.log[currentLastIndex].termNumber && req.lastLogIndex > currentLastIndex) {
+		res.term = self.currentTerm
+		res.voteGranted = true
+		return nil
+		//return self.currentTerm, true
 	}
 
-	return self.currentTerm, false
+	res.term = self.currentTerm
+	res.voteGranted = false
+	return nil
+	//return self.currentTerm, false
 }
 
 // Ideally: calls another RPC message on the receiver (follower)
@@ -214,57 +250,71 @@ func (self *Raft) GetVotes() int {
 	self.votedFor = self.ID
 	numVotes := 1
 
-	var failedConnections = make(map[string]bool)
+	var connectionToMake = make(map[string]bool)
 
-	// For each replica, attempt to get a vote
 	for _, replicaAddr := range self.replicas {
-		// Connect to replica
-		conn, err := DialWithCheck("tcp", replicaAddr)
-		defer conn.Close()
-
-		// If we failed, note it so we can try again later
-		if (err != nil) {
-			// adding replicaAddr to map
-			failedConnections[replicaAddr] = true
-		} else {
-			req, res := new(Request), new(Response)
-
-			// RPC Call
-			conn.Call("Raft.RequestVote", req, res)
-		}
-	}
-
-	// We win if we got enough votes on the first try (assume we were able to contact a quorum)
-	if (numVotes >= self.quorumSize) {
-		self.state = LEADER_STATE
-		return 0 // Exit
+		connectionToMake[replicaAddr] = true
 	}
 
 	// If we are not able to contact a quorum initially, then we need to try to get the votes from previously failed attempts
 	// And keep trying until someone either informs us of a new leadership, or we timeout and try again
 	// While we still think we are the candidate, keep trying to get the votes that you need
-	for (self.state == CANDIDATE_STATE) {
-		// We win
-		if (numVotes >= self.quorumSize) {
-			self.state = LEADER_STATE
-			return 0 // Exit
-		}
+	for self.state == CANDIDATE_STATE {
+		// Keep trying to contact and get votes while we are still in the candidate state
+		for replicaAddr, visited := range connectionToMake {
+			// Dont need to contact those we got votes from
+			if (visited == false) {
+				// Connect to replica
+				conn, err := DialWithCheck("tcp", replicaAddr)
+				defer conn.Close()
 
-		for replicaAddr, _ := range failedConnections {
-			// Connect to replica
-			conn, err := DialWithCheck("tcp", replicaAddr)
-			defer conn.Close()
+				// If we failed, note it so we can try again later
+				if (err != nil) {
+					fmt.Println("Raft.GetVotes: Failed to establish connection to ", replicaAddr)
+					continue // move onto the next address to try
+				} else {
+					req, res := new(RequestVoteArgs), new(RequestVoteResponse)
 
-			// If we can connect then we try to do the RPC call
-			if (err == nil) {
-				req, res := new(Request), new(Response)
+					lastLogIndex := len(self.log)-1
 
-				// RPC Call
-				conn.Call("Raft.RequestVote", req, res)
+					req.term = self.currentTerm
+					req.candidateID = self.ID
+					req.lastLogIndex = lastLogIndex
+					req.lastLogTerm = self.log[lastLogIndex].termNumber
+					
+					// RPC Call
+					err := conn.Call("Raft.RequestVote", req, res)
+
+					if (err != nil) {
+						fmt.Println("Raft.GetVotes: Error from RPC Call to ", replicaAddr)
+						continue
+					}
+
+					// We find out our term is outdated, we lose eligibility to be a candidate
+					if (res.term > self.currentTerm) {
+						self.currentTerm = res.term // update our term
+						self.state = FOLLOWER_STATE // become a follower
+						startSignal<-true
+						return 0 // Exit
+					}
+
+					// If we got the vote, great!
+					if (res.voteGranted == true) {
+						// We are successful, no longer need to ask this replica
+						connectionToMake[replicaAddr] = true
+						numVotes += 1
+					}
+					// We win if we got enough votes on the first try (assume we were able to contact a quorum)
+					if (numVotes >= self.quorumSize) {
+						self.state = LEADER_STATE
+						self.leaderID = self.ID // note that we are the leader
+						startSignal <- true // Signal the main thread to go to a different state
+						return 0 // Exit
+					}
+				}
 			}
 		}
 	}
-
 	return 0
 }
 
@@ -273,11 +323,13 @@ func (self *Raft) GetVotes() int {
 func (self *Raft) RaftSetup(nodeID string, numOfReplicas int) {
 	self.state = FOLLOWER_STATE
 	self.ID = nodeID
+	self.leaderID = "" // We don't know who the leader is initially
 	self.currentTerm = 1
 	self.votedFor = ""
 	self.committedIndex = 0
 	self.lastApplied = 0
 	self.quorumSize = (numOfReplicas/2) + 1
+	timeout = rand.Intn(150) + 150
 }
 
 // Ideally running this in a separate thread (or basically the main thread)
@@ -286,15 +338,25 @@ func (self *Raft) RaftSetup(nodeID string, numOfReplicas int) {
 func (self *Raft) RunRaft(nodeID string, numReplicas int) {
 
 	self.RaftSetup(nodeID, numReplicas)
-
+	timer = time.After(time.Duration(timeout) * time.Millisecond)
 	for {
-		switch self.state {
-		case FOLLOWER_STATE :
-			fmt.Println("I am follower")
-		case LEADER_STATE :
-			fmt.Println("I am leader")
-		case CANDIDATE_STATE :
-			fmt.Println("I am in candidate")
+		select {
+		case <-startSignal:
+			switch self.state {
+			case FOLLOWER_STATE :
+				fmt.Println("I am follower")
+			case LEADER_STATE :
+				fmt.Println("I am leader")
+			case CANDIDATE_STATE :
+				fmt.Println("I am in candidate")
+			}
+		case <-timer:
+			timeout = rand.Intn(150) + 150
+			timer = time.After(time.Duration(timeout) * time.Millisecond)
+			// If we timeout during the follower_state, start election
+			if (self.state == FOLLOWER_STATE) {
+				self.state = CANDIDATE_STATE
+			}
 		}
 
 	}
@@ -510,6 +572,11 @@ func transformAddr (addr string) (string, bool) {
 }
 
 func main() {
+	// Timeout setup
+	timeout = rand.Intn(150) + 150
+	startSignal = make(chan bool,1)
+	startSignal <- true
+
 	// Add some initial items into our db
 	database = append(database, CO.NewProduct(999, "MacBook Air 2019", "This is the new Apple MacBook Air 2019, with Great Specs!", "New","Apple"))
 	database = append(database, CO.NewProduct(300, "Nintendo Switch", "This is the most awesome switch in the world", "Good", "Nintendo (the guy next door)"))
