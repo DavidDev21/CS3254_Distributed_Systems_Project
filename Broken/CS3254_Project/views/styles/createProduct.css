@@ -1,0 +1,11 @@
+.create_form {
+    background-color: gray;
+}
+
+.form_title {
+    border-bottom: 2px solid black;
+}
+
+.form_column {
+    border: 2px solid black;
+}

@@ -9,3 +9,13 @@ Create a basic web app with golang IRIS
 '''
 Separate original app into frontend and backend server
 '''
+
+Leader
+'''
+go run backend.go --listen=8090 --id=:8090 --backend=:8091,:8092 --leader=true
+'''
+
+Others
+'''
+go run backend.go --listen=8091 --id=:8091 --backend=:8090,:8092
+'''
