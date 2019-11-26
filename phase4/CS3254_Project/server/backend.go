@@ -719,6 +719,15 @@ func main() {
 	flag.Parse()
 	fmt.Println("Running on Port: ", portNum)
 
+	nodeID, valid := transformAddr(nodeID)
+	if (valid == false) {
+		fmt.Println("id_flag: Wrong address format")
+		fmt.Println("id_flag: Valid address format: <ip>:<port>")
+		fmt.Println("id_flag: ", nodeID)
+		os.Exit(1)
+	}
+
+	fmt.Println("Node ID: ", nodeID)
 	fmt.Println("Raw replica addrs: ", backendReplicas)
 	// Checks all the IP addresses to the backend replicas
 	for i := 0; i < len(backendReplicas); i++ {
