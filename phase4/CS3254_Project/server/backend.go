@@ -24,6 +24,7 @@ import ("fmt"
 // Performs RPC Dial to address under the indicated network protocol
 // Exits the program if there was an error
 func DialWithCheck(protcol, address string) (*rpc.Client, error) {
+	fmt.Println("address: ", address)
 	conn, err := rpc.Dial(protcol, address)
 
 	if (err != nil) {
@@ -396,18 +397,19 @@ func (self *Raft) runCandidate() {
 	// While we still think we are the candidate, keep trying to get the votes that you need
 	for self.state == CANDIDATE_STATE && self.activeElection == true {
 		// Keep trying to contact and get votes while we are still in the candidate state
-		for replicaAddr, visited := range connectionToMake {
+		for replicaAddr, needToConnect := range connectionToMake {
 			// Dont need to contact those we got votes from
-			if (visited == false) {
+			if (needToConnect == true) {
 				// Connect to replica
 				conn, err := DialWithCheck("tcp", replicaAddr)
-				defer conn.Close()
 
 				// If we failed, note it so we can try again later
 				if (err != nil) {
 					fmt.Println("Raft.GetVotes: Failed to establish connection to ", replicaAddr)
 					continue // move onto the next address to try
 				} else {
+					fmt.Println("Raft.GetVotes: Established connection to ", replicaAddr)
+
 					req, res := new(RequestVoteArgs), new(RequestVoteResponse)
 
 					lastLogIndex := len(self.log)-1
@@ -424,6 +426,11 @@ func (self *Raft) runCandidate() {
 						fmt.Println("Raft.GetVotes: Error from RPC Call to ", replicaAddr)
 						continue
 					}
+
+					conn.Close()
+					
+					// No longer need to contact this replica for a vote
+					connectionToMake[replicaAddr] = false
 
 					// We find out our term is outdated, we lose eligibility to be a candidate
 					if (res.term > self.currentTerm) {
