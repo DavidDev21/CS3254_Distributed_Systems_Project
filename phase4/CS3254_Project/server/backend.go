@@ -1,7 +1,7 @@
 /*
 	Name: David Zheng (dz1063)
 	Course: CS3254
-	Project Part 2 (Backend)
+	Project Part 4 (Backend)
 	backend.go will serve as the starting point for the backend server
 */
 package main
@@ -17,6 +17,9 @@ import ("fmt"
 		"time"
 		"math/rand"
 		CO "CS3254_Project/custom_objects")
+
+// Note: unexported methods aren't registered for RPC, (lowercase methods)
+
 
 // Performs RPC Dial to address under the indicated network protocol
 // Exits the program if there was an error
@@ -87,10 +90,23 @@ func DialWithCheck(protcol, address string) (*rpc.Client, error) {
 const FOLLOWER_STATE = "follower"
 const LEADER_STATE = "leader"
 const CANDIDATE_STATE = "candidate"
+const HEARTBEAT_PERIOD = time.Duration(50) * time.Millisecond // Should be less than the min timeout time
+const TIMEOUT_RANGE_START = 150
+const TIMEOUT_RANGE_END = 150
 
+// Raft Mutex
+var RaftMutex = &sync.Mutex{}
+
+// Timer
 var timeout int
 var startSignal chan bool
 var timer <-chan time.Time
+
+// Sets the timer for random time between the start and end range
+func SetTimer(start, end int) {
+	timeout = rand.Intn(end) + start
+	timer = time.After(time.Duration(timeout) * time.Millisecond)
+}
 
 // We need the arguments that come with the commands
 // In order to replicate the state of the database
@@ -122,14 +138,9 @@ type Raft struct {
 	quorumSize int // the minimum quorum we need given our initial configuration
 	leaderID string
 	replicas []string
-}
 
-/* RPC HANDLERS */
-type AppendRequest struct {
-
-}
-type RaftResponse struct {
-
+	// This kills the candidate's election if we timeout
+	activeElection bool
 }
 
 type AppendEntriesArgs struct {
@@ -146,8 +157,29 @@ type AppendEntriesResponse struct {
 	success bool
 }
 
-func (self *Raft) AppendEntries() {
+// This is effectively the follower's main method, it just respond to RPC calls from leader
+// We get an AppendEntries call from the leader
+func (self *Raft) AppendEntries(req AppendEntriesArgs, res *AppendEntriesResponse) error {
+	// Reset Timer now that we got an msg from leader
+	SetTimer(TIMEOUT_RANGE_START, TIMEOUT_RANGE_END)
 
+	// Safer to have mutex on the state to prevent issues with other threads accessing / modifying the state, (RequestVote)
+	RaftMutex.Lock()
+	// We are no longer the leader if we were the leader, and also can't be a candidate if a leader was elected
+	if (self.state == CANDIDATE_STATE || (self.state == LEADER_STATE && self.currentTerm < req.term)) {
+		self.state = FOLLOWER_STATE
+		fmt.Println("AppendEntries: Lost Leadership, or Candidate Eligibility")
+	}
+
+	self.currentTerm = req.term // This would cover the case if we are an old leader and need to update
+	self.leaderID = req.leaderID
+
+	fmt.Println("Leader is: ", self.leaderID)
+	res.term = self.currentTerm
+	res.success = true
+
+	RaftMutex.Unlock()
+	return nil
 }
 
 // Leader Election Methods
@@ -180,20 +212,33 @@ type RequestVoteResponse struct {
 // self: here should be the receiver end meaning a follower
 // Args: term int, candidateID string, lastLogIndex int, lastLogTerm int
 func (self *Raft) RequestVote(req RequestVoteArgs, res *RequestVoteResponse) error {
-	// Case: we already voted for the candidate that is requesting (in the event of network failure)
-	if (self.votedFor == req.candidateID) {
+	// Note: the only time we would ever vote for someone is if our term is less than candidate term
+	// If candidate claims the same term as us, then we can believe that we already voted for someone in the current term
+	// (we would only be the same if we had voted, since we are forced to update our current term to matched the candidate that we are voting for)
+	
+	unlockMutex := false // purely to limit the times to lock and unlock
+
+	// Large Critical Section is more worth since all the operations are relatively short
+	RaftMutex.Lock()
+
+	// Case: we already voted for someone else in the current term / the candidate's term is behind (covers 2 cases)
+	if (self.votedFor != req.candidateID && req.term <= self.currentTerm) {
+		res.term = self.currentTerm
+		res.voteGranted = false
+		unlockMutex = true
+		//return self.currentTerm, false
+	}
+	// Case: we already voted for the candidate that is requesting for the current term(in the event of network failure)
+	if (self.votedFor == req.candidateID && self.currentTerm == req.term) {
 		res.term = self.currentTerm
 		res.voteGranted = true
-		return nil
+		unlockMutex = true
 		//return self.currentTerm, true
 	}
 
-	// Case: we already voted for someone else
-	if (self.votedFor != "" || req.term < self.currentTerm) {
-		res.term = self.currentTerm
-		res.voteGranted = false
+	if (unlockMutex == true) {
+		RaftMutex.Unlock()
 		return nil
-		//return self.currentTerm, false
 	}
 
 	// First Check if Caller's term is not behind ours
@@ -219,7 +264,23 @@ func (self *Raft) RequestVote(req RequestVoteArgs, res *RequestVoteResponse) err
 
 	currentLastIndex := len(self.log)-1
 
+	firstCondition := (req.lastLogTerm > self.log[currentLastIndex].termNumber)
+	secondCondition := (req.lastLogTerm == self.log[currentLastIndex].termNumber && req.lastLogIndex > currentLastIndex)
+
+	fmt.Println("Raft.RequestVote First Condition: ", firstCondition)
+	fmt.Println("Raft.RequestVote Second Condition: ", secondCondition)
+	if (firstCondition || secondCondition) {
+		self.votedFor = req.candidateID
+		self.currentTerm = req.term
+		res.term = self.currentTerm
+		res.voteGranted = true
+		return nil
+	}
+
+	/*
 	if (req.lastLogTerm > self.log[currentLastIndex].termNumber) {
+		self.votedFor = req.candidateID
+		self.currentTerm = req.term
 		res.term = self.currentTerm
 		res.voteGranted = true
 		return nil
@@ -227,16 +288,90 @@ func (self *Raft) RequestVote(req RequestVoteArgs, res *RequestVoteResponse) err
 	}
 
 	if (req.lastLogTerm == self.log[currentLastIndex].termNumber && req.lastLogIndex > currentLastIndex) {
+		self.votedFor = req.candidateID
+		self.currentTerm = req.term
 		res.term = self.currentTerm
 		res.voteGranted = true
 		return nil
 		//return self.currentTerm, true
 	}
+	*/
 
 	res.term = self.currentTerm
 	res.voteGranted = false
+
+	RaftMutex.Unlock()
 	return nil
 	//return self.currentTerm, false
+}
+
+// Raft Infrastructure Code
+// Setsup initial state of raft node
+func (self *Raft) raftSetup(nodeID string, replicas []string, isFirstLeader bool) {
+	self.state = FOLLOWER_STATE
+	self.ID = nodeID
+	self.leaderID = "" // We don't know who the leader is initially
+	self.currentTerm = 1
+	self.votedFor = ""
+	self.committedIndex = 0
+	self.lastApplied = 0
+	self.replicas = replicas
+	self.quorumSize = (len(replicas)/2) + 1
+	self.activeElection = false
+
+	// We need to differiate the logs between the first leader and others for the leader to actually get votes
+	if (isFirstLeader == true) {
+		self.log = []LogEntry{LogEntry{termNumber: 1, command: ""}}
+	} else {
+		self.log = []LogEntry{LogEntry{termNumber: 0, command: ""}}
+	}
+}
+
+// Algo for each state
+func RunFollower() {
+	// The follower simply responses to RPC calls, so effectively all it has to do is 
+	// AppendEntries and RequestVote
+}
+
+
+// Leader Functions
+// The Leader methods should be separate into two components
+// The normal heartbeat which composes of empty AppendEntries
+// and the client request processing, which should happen whenver the client requests
+// This is to prevent a flood of heartbeat messages and allow for additional control flow
+func (self *Raft) runLeaderHeartbeat() {
+	// While we are still the leader
+	for self.state == LEADER_STATE {
+		for _, replicaAddr := range self.replicas {
+			// Connect to replica
+			conn, err := DialWithCheck("tcp", replicaAddr)
+			defer conn.Close()
+
+			// If we failed, note it so we can try again later
+			if (err != nil) {
+				fmt.Println("Raft.AppendEntries (Leader Heartbeat): Failed to establish connection to ", replicaAddr)
+				continue // move onto the next address to try
+			} else {
+				req, res := new(AppendEntriesArgs), new(AppendEntriesResponse)
+				
+				// RPC Call
+				err := conn.Call("Raft.AppendEntries", req, res)
+
+				if (err != nil) {
+					fmt.Println("Raft.AppendEntries (Leader Heartbeat): Error from RPC Call to ", replicaAddr)
+					continue
+				}
+			}
+		}
+
+		// Add some delays between heartbeats
+		time.Sleep(HEARTBEAT_PERIOD)
+	}
+}
+
+// Specific RPC call for client to call when they want to request
+func (self *Raft) processClient() {
+
 }
 
 // Ideally: calls another RPC message on the receiver (follower)
@@ -244,7 +379,7 @@ func (self *Raft) RequestVote(req RequestVoteArgs, res *RequestVoteResponse) err
 // GetVotes() should return the number of votes we got back from the other replicas
 // We count those replicas that we can't reach as a no vote
 // Self: here should be the candidate in this case, ourselves
-func (self *Raft) GetVotes() int {
+func (self *Raft) runCandidate() {
 
 	// vote for self
 	self.votedFor = self.ID
@@ -259,7 +394,7 @@ func (self *Raft) GetVotes() int {
 	// If we are not able to contact a quorum initially, then we need to try to get the votes from previously failed attempts
 	// And keep trying until someone either informs us of a new leadership, or we timeout and try again
 	// While we still think we are the candidate, keep trying to get the votes that you need
-	for self.state == CANDIDATE_STATE {
+	for self.state == CANDIDATE_STATE && self.activeElection == true {
 		// Keep trying to contact and get votes while we are still in the candidate state
 		for replicaAddr, visited := range connectionToMake {
 			// Dont need to contact those we got votes from
@@ -295,7 +430,7 @@ func (self *Raft) GetVotes() int {
 						self.currentTerm = res.term // update our term
 						self.state = FOLLOWER_STATE // become a follower
 						startSignal<-true
-						return 0 // Exit
+						return // Exit
 					}
 
 					// If we got the vote, great!
@@ -309,75 +444,52 @@ func (self *Raft) GetVotes() int {
 						self.state = LEADER_STATE
 						self.leaderID = self.ID // note that we are the leader
 						startSignal <- true // Signal the main thread to go to a different state
-						return 0 // Exit
+						return // Exit
 					}
 				}
 			}
 		}
 	}
-	return 0
-}
-
-// Raft Infrastructure Code
-// Setsup initial state of raft node
-func (self *Raft) RaftSetup(nodeID string, numOfReplicas int) {
-	self.state = FOLLOWER_STATE
-	self.ID = nodeID
-	self.leaderID = "" // We don't know who the leader is initially
-	self.currentTerm = 1
-	self.votedFor = ""
-	self.committedIndex = 0
-	self.lastApplied = 0
-	self.quorumSize = (numOfReplicas/2) + 1
-	timeout = rand.Intn(150) + 150
+	return
 }
 
 // Ideally running this in a separate thread (or basically the main thread)
 // Separate from the RPCs
 // Self: is the current Raft instance on this machine
-func (self *Raft) RunRaft(nodeID string, numReplicas int) {
+func (self *Raft) runRaft(nodeID string, replicas []string, isFirstLeader bool) {
 
-	self.RaftSetup(nodeID, numReplicas)
-	timer = time.After(time.Duration(timeout) * time.Millisecond)
+	self.raftSetup(nodeID, replicas, isFirstLeader)
+	SetTimer(TIMEOUT_RANGE_START, TIMEOUT_RANGE_END)
+
 	for {
 		select {
+		// A new state is only triggered or run by startSignal
+		// In theory, only one state thread is running at any given moment
 		case <-startSignal:
 			switch self.state {
 			case FOLLOWER_STATE :
-				fmt.Println("I am follower")
+				// Most likely will never actually be in here since Follower only listens for Raft RPC calls
+				fmt.Println("STATE: I am follower")
 			case LEADER_STATE :
-				fmt.Println("I am leader")
+				fmt.Println("STATE: I am leader")
+				go self.runLeaderHeartbeat()
 			case CANDIDATE_STATE :
-				fmt.Println("I am in candidate")
+				fmt.Println("STATE: I am in candidate")
+				self.activeElection = true
+				go self.runCandidate()
 			}
 		case <-timer:
-			timeout = rand.Intn(150) + 150
-			timer = time.After(time.Duration(timeout) * time.Millisecond)
+			SetTimer(TIMEOUT_RANGE_START, TIMEOUT_RANGE_END)
+			fmt.Println("Main Raft: Timed Out")
 			// If we timeout during the follower_state, start election
 			if (self.state == FOLLOWER_STATE) {
 				self.state = CANDIDATE_STATE
 			}
+			self.activeElection = false // forces the old election to stop if we time out
+			startSignal<-true
 		}
 
 	}
-
-}
-
-// Jumpstarts the Election process for us
-func StartElection () {
-
-}
-
-// Algo for each state
-func RunFollower() {
-
-}
-
-func RunLeader() {
-
-}
-
-func RunCandidate() {
 
 }
 
@@ -387,7 +499,7 @@ func RunCandidate() {
 const NUM_THREADS = 5
 const DEFAULT_BACKEND_ADDR = "localhost:8090"
 const DEFAULT_PORT = 8090
-const HEARTBEAT_PORT = ":8091"
+//const HEARTBEAT_PORT = ":8091"
 
 // Global Var
 var database []CO.Product
@@ -398,6 +510,7 @@ var threadGroup sync.WaitGroup
 // Mutex
 var Mutex = &sync.Mutex{}
 
+/*
 // Simply accept a connection from whoever wants to know if the server is alive
 func heartBeat(protocol string) {
 	sock, err := net.Listen(protocol, HEARTBEAT_PORT)
@@ -413,7 +526,7 @@ func heartBeat(protocol string) {
 		defer conn.Close()
 	}
 }
-
+*/
 
 // Removes an item from the database based on the product ID
 // the ... acts like a spread operator in javascript
@@ -572,8 +685,9 @@ func transformAddr (addr string) (string, bool) {
 }
 
 func main() {
-	// Timeout setup
-	timeout = rand.Intn(150) + 150
+	// Raft Instance
+	raft := new(Raft)
+
 	startSignal = make(chan bool,1)
 	startSignal <- true
 
@@ -583,24 +697,29 @@ func main() {
 
 	// Register a handler
 	rpc.Register(new(DB))
+	rpc.Register(raft)
 
 	// Start up thread to listen on heartbeat port
-	go heartBeat("tcp")
+	//go heartBeat("tcp")
 
-	// Defines the listen flag
+	// Defines flags
+	// isFirstLeader is needed since all the logs initially are all empty and the same
+	// so no one would win the election. this helps us make one log different
 	var portNum int
 	var backendReplicas arrayFlag
 	var nodeID string 
+	var isFirstLeader bool
 
 	flag.IntVar(&portNum, "listen", 8090, "This is the port number the application will listen on")
 	flag.Var(&backendReplicas, "backend", "This is a list of all the other replicas on the backend")
 	flag.StringVar(&nodeID, "id", "", "This is the public IP address for this node")
+	flag.BoolVar(&isFirstLeader, "leader", false, "This indicates this node is the first leader")
 
 	// Parases the command line for flags
 	flag.Parse()
-	fmt.Println(portNum)
+	fmt.Println("Running on Port: ", portNum)
 
-	fmt.Println(backendReplicas)
+	fmt.Println("Raw replica addrs: ", backendReplicas)
 	// Checks all the IP addresses to the backend replicas
 	for i := 0; i < len(backendReplicas); i++ {
 		fmt.Println(backendReplicas[i])
@@ -616,7 +735,9 @@ func main() {
 		backendReplicas[i] = formattedAddr
 	}
 
-	fmt.Println(backendReplicas)
+	fmt.Println("Replica addrs: ", backendReplicas)
+
+	fmt.Println("IsFirstLeader: ", isFirstLeader)
 
 	servicePort := fmt.Sprintf(":%d", portNum)
 
@@ -631,6 +752,8 @@ func main() {
 	fmt.Println("Server now listening on", servicePort)
 	// Create multi threads to listen to requests
 	threadGroup.Add(NUM_THREADS)
+
+	go raft.runRaft(nodeID, backendReplicas, isFirstLeader)
 
 	for i := 0; i < NUM_THREADS; i++ {
 		go rpc.Accept(listener)
