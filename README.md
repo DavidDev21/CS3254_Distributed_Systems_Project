@@ -1,5 +1,9 @@
 ## CS3254 Project
 
+Implemented a distributed backend system based on the raft consensus algo in golang.
+
+https://raft.github.io/
+
 # Phase 1
 '''
 Create a basic web app with golang IRIS
